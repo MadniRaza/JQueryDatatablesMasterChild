@@ -1,0 +1,603 @@
+﻿@model IP.Models.VendorMatrixModel
+
+@{
+    Layout = null;
+}
+<style type="text/css">
+    td.show_vendors {
+        background: url('/Content/images/details_open.png') no-repeat center center;
+        cursor: pointer;
+        width: 20px;
+    }
+
+    tr.shown td.show_vendors {
+        background: url('/Content/images/details_close.png') no-repeat center center;
+    }
+
+    #file_uploader {
+        position: absolute;
+        font-size: 50px;
+        opacity: 0;
+        right: 0;
+        top: 0;
+        padding: 0px 10px 0px 10px;
+        margin-right: 10px;
+    }
+
+    #btnUploadFile {
+        margin: 4px 6px 0px 0px;
+        font-weight: 600;
+    }
+</style>
+
+
+<div id="parentDiv" class="container-fluid">
+    <div id="dataList" class="box panel panel-default">
+        <div class="box-header with-border bg-blue-gradient">
+            <div>
+                <button type="button" class="btn btn-box-tool pull-left">
+                    <span class="fa fa-th-list fa-lg white"></span>
+                </button>
+                <h6 class="box-title"><strong>@Html.DisplayFor(m => m.ReportTitle)</strong><strong id="filterString"></strong></h6>
+            </div>
+            <div style="position:absolute;">
+                @using (Html.BeginForm("GetExportedFile", "VendorMatrix", FormMethod.Post))
+                {
+                    <input type="submit" value="Export" id="btnExport" style="visibility:hidden;" />
+                }
+            </div>
+            <div class="box-tools pull-right" style="position:absolute !important;">
+                <div id="buttons" class="box-tools pull-right">
+                </div>
+
+                <input type="submit" id="btnUploadFile" onclick="upload_file()" class="btn btn-success" style="padding: 1px 10px 1px 10px !important; visibility:hidden;" value="Import" />
+                <input accept=".xlsx, .xls" type="file" name="file" onchange="send_file_to_controller(this)" id="file_uploader" style="display: none" />
+
+            </div>
+        </div>
+
+        <div class="box-body">
+            <div>
+                <table id="lst_parts" class="table table-bordered table-striped text-sm table-hover" width="100%">
+                    <thead>
+                        <tr>
+                            <th class="notexport"></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th class="notexport"></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    var any_row_open = false;
+    var table = null;
+    var vendor_list = null;
+    var employee_rights = null;
+    ToggleDataList(false);
+    get_employee_rights();
+    
+
+    $(document).ready(function () {
+        $("body").on("contextmenu", function (e) {
+            return false;
+        });
+    });
+    function get_employee_rights()
+    {
+        $.ajax({
+            cache: false,
+            type: 'GET',
+            url: '/VendorMatrix/GetEmployeeRights',
+            datatype: JSON,
+            data:
+            {
+                report_code: $("#rptCode").val()
+            },
+            success: function (data) {
+                employee_rights = data.employee_rights;
+                if (employee_rights.indexOf("RLE_ADMIN") >= 0 || employee_rights.indexOf("AXS_MASS_UPLOAD") >= 0)
+                    $("#btnUploadFile").css("visibility", "visible");
+                else if (employee_rights.indexOf("AXS_VIEW") == -1) {
+                    showAlert('Warning', 'Access Denied');
+                    return;
+                }
+                load_all_parts();
+            },
+            onerror: function (r) { r },
+            failure: function (r) { r }
+        });
+    }
+
+    function load_all_parts() {
+        $('#lst_parts > tbody').empty();
+
+        $.ajax({
+            cache: false,
+            type: 'GET',
+            url: '/VendorMatrix/GetPartList',
+            datatype: JSON,
+            data:
+            {
+                report_code: $("#rptCode").val()
+            },
+            //async:false,
+            success: function (data) {
+                var columnDef = [];
+                columnDef.push({ "title": "Part No.", "width": "100px", "targets": 1 });
+                columnDef.push({ "title": "Description", "targets": 2 });
+                columnDef.push({
+                    "title": "Sourcing", "width": "55px",
+                    "targets": 3, "className": "text-center"
+                });
+                columnDef.push({
+                    "targets": 4,
+                    "visible": false
+                });
+                columnDef.push
+                    ({
+                        "targets": 0,
+                        "className": 'show_vendors',
+                        "orderable": false,
+                        "data": null,
+                        "defaultContent": '',
+                        "width": "25px"
+                    });
+                ToggleDataList(true);
+                $('#lst_parts').DataTable().clear();
+                $('#lst_parts').DataTable().destroy();
+
+                table = make_grid('lst_parts', data.lst_parts, 0, columnDef, true, false);
+
+                vendor_list = '<option value = "0">--select--</option>';
+                $.each(data.lst_all_vendors, function (i, row) {
+                    vendor_list += '<option value="' + row.Value + '">' + row.Text + '</option>';
+                });
+            },
+            onerror: function (r) { r },
+            failure: function (r) { r }
+        });
+    }
+
+
+    $('#lst_parts > tbody').on('click', 'td.show_vendors', function () {
+        var tr = $(this).closest('tr');
+        var row = table.row(tr);
+        var row_index = row.index();
+        if (row.child.isShown()) {
+            // This row is already open - close it
+            row.child.hide();
+            tr.removeClass('shown');
+            any_row_open = false;
+        }
+        else {
+            // Open this row
+            if (any_row_open)
+                return;
+
+            any_row_open = true;
+            row.child(show_all_vendors(row.data(), row_index)).show();
+            tr.addClass('shown');
+
+            set_entry_validations(row_index);
+            if (employee_rights.indexOf("RLE_ADMIN") >= 0 || employee_rights.indexOf("AXS_VENDOR") >= 0) {
+                // DO NOTHING IF HAS RIGHTS TO ADD/EDIT
+            }
+            else {
+                //PREVENT EDITING VENDORS
+                $('#lst_' + row_index + ' tr :input').prop('disabled', true);
+                $('#lst_' + row_index + ' #btn_add_new_row').addClass('disabled');
+                $('#lst_' + row_index + ' #btnGo').addClass('disabled');
+                $('#lst_' + row_index + ' tbody tr td #btn_remove_vendor').addClass('disabled');
+            }
+
+
+        }
+    });
+    function validate_vendor(ths, row_index) {
+        if (ths.value == 0)
+            return;
+        $('#lst_' + row_index + ' > tbody > tr #dd_vendor_' + row_index + '').not(ths).each(function () {
+            if ($(this).val() == ths.value) {
+                showAlert('Error', 'Vendor found in the list');
+                var currentRow = $(ths).closest("tr");
+                currentRow.remove();
+            }
+        });
+
+    }
+
+
+    function show_all_vendors(d, row_index) {
+        // `d` is the original data object for the row
+
+        var str = '';
+        str += '<table id= "lst_' + row_index + '" class="table-bordered text-sm table-hover" width="595px">'
+        str += '<thead>';
+        str += '<tr>';
+        str += '<th>Order</th>';
+        str += '<th>VenID</th>';
+        str += '<th>Allc%</th>';
+        str += '<th>UP</th>';
+        str += '<th>LT</th>';
+        str += '<th></th>';
+        str += '<th style="display:none;"></th>';
+        str += '</tr>';
+        str += '</thead>';
+        str += '<tbody>';
+
+        var detail = d[4];
+        if (detail.length == 0 || detail == null) {
+            str += add_vendor_in_grid(row_index, 0, vendor_list, 0.00, 0.00, 0, 'I');
+        }
+        else {
+            var rows = detail.split("┘");
+            for (var i = 0; i < rows.length; i++) {
+                var columns = rows[i].split("»»»");
+                var vendor_id = columns[0];
+                var order = columns[1];
+                var alloc = columns[2];
+                var unit_price = columns[3];
+                var LT = columns[4]
+
+                //set vendor selected
+                var xVendors = vendor_list;
+                xVendors = xVendors.replace("value=\"" + vendor_id + "\"", "value=\"" + vendor_id + "\" selected");
+
+                str += add_vendor_in_grid(row_index, order, xVendors, alloc, unit_price, LT, 'U');
+            }
+        }
+        str += '<tfoot>'
+        str += '<tr>'
+        str += '<th></th>'
+        str += '<th></th>'
+        str += '<th></th>'
+        str += '<th><a id="btn_add_new_row" role="button" style="align:center; right:0px; padding:0px; height:20px; width:100%" class="btn btn-success" onclick="add_new_row(' + row_index + ')"><span style="color:#ffffff;" class="fa fa-plus fa-sm"></span >Add</a></th>'
+        str += '<th><a id="btnGo" role="button" style="right:0px; padding:0px; height:20px; width:100%" class="btn btn-primary" onclick="save_vendor_detail(' + row_index + ')">Save</a></th>'
+        str += '<th></th>'
+        str += '</tr>'
+        str += '</tfoot>'
+        str += '</tbody>';
+        str += '</table>';
+        return str;
+    }
+
+    function add_new_row(row_index) {
+        var str = add_vendor_in_grid(row_index, 0, vendor_list, 0.00, 0.00, 0, 'I');
+        $("#lst_" + row_index).append(str);
+        set_entry_validations(row_index);
+    }
+
+    function add_vendor_in_grid(row_index, order, xVendors, alloc, UP, LT, row_type) {
+
+        var str = '<tr>';
+        str += '<td><input type = "text" maxlength="4" class="numeric_field" id = "txt_order_' + row_index + '" style="width:40px; text-align:right;" value = "' + order + '"></td>';
+        if (row_type == 'U')
+            str += '<td width="200px"><select id="dd_vendor_' + row_index + '" onchange="validate_vendor(this,' + row_index + ')" disabled>' + xVendors + ' </select></td>';
+        else
+            str += '<td width="200px"><select id="dd_vendor_' + row_index + '" onchange="validate_vendor(this,' + row_index + ')">' + xVendors + ' </select></td>';
+        str += '<td><input type = "text" maxlength="5" class="decimal_field" id = "txt_alloc_' + row_index + '" style="width:40px; text-align:right;" value = "' + alloc + '" ></td>';
+        str += '<td><div class="input-group" style="height:19px; padding:0px;"> ';
+        str += '<span class="input-group-addon" style="height:19px; font-weight:bold; padding:0px;">$</span> ';
+        str += '<input type="text" maxlength="6" class="decimal_field" id="txt_UP_' + row_index + '" style="width:100px; height:19px;text-align:right;"  value = "' + UP + '">';
+        str += '</td></div>';
+        str += '<td><input type = "text" maxlength="4" class="numeric_field" style="width:60px;text-align:right;" id = "txt_LT_' + row_index + '" value = "' + LT + '"></td>';
+        str += '<td><a id="btn_remove_vendor" role="button" onclick="remove_vendor_from_grid(this,' + row_index + ')" style="align:center; right:0px; padding:0px; height:20px; width:100%" class="btn btn-danger"><span style="color:white;" class="fa fa-times fa-sm"></span ></a></td>';
+        //str += '<td><a ><i class="fa fa-times" style="color:red;"></i></a></td>'
+        str += '<td style="display:none;" id="row_type_' + row_index + '">' + row_type + '</td>';
+        str += '</tr>';
+        return str;
+    }
+
+    function remove_vendor_from_grid(row, row_index) {
+        var currentRow = $(row).closest("tr");
+        var row_type = currentRow.find('#row_type_' + row_index + '').text()
+        if (row_type == 'I') {
+            currentRow.remove();
+        }
+        else {
+            currentRow.find('#row_type_' + row_index + '').text('D')
+            currentRow.hide();
+        }
+
+    }
+
+    function set_entry_validations(row_index) {
+        is_numeric('numeric_field')
+        is_decimal('decimal_field')
+        disable_paste('numeric_field');
+        disable_paste('decimal_field');
+    }
+
+    function save_vendor_detail(row_index) {
+        var row = table.row(':eq(' + row_index + ')');
+        var part_num = row.data()[1];
+
+        var vendor_detail = '';
+        var alloc_sum = 0;
+        var total_vendors = $('#lst_' + row_index + ' > tbody > tr').length;
+        var is_valid_UP = true;
+        var is_valid_order = true;
+        var is_valid_alloc = true;
+        var is_valid_LT = true;
+        var is_valid_vendor = true;
+
+        $('#lst_' + row_index + ' > tbody > tr').each(function (index) {
+            var vendor_id = $(this).find('#dd_vendor_' + row_index + '').val()
+            var row_type = $(this).find('#row_type_' + row_index + '').text();
+            var order = $(this).find('#txt_order_' + row_index + '').val()
+            var alloc = $(this).find('#txt_alloc_' + row_index + '').val()
+            var unit_price = $(this).find('#txt_UP_' + row_index + '').val()
+            var LT = $(this).find('#txt_LT_' + row_index + '').val()
+
+
+            vendor_detail += vendor_id;
+            vendor_detail += '»»»';
+            vendor_detail += order;
+            vendor_detail += '»»»';
+            vendor_detail += alloc;
+            vendor_detail += '»»»';
+            vendor_detail += unit_price;
+            vendor_detail += '»»»';
+            vendor_detail += LT;
+            vendor_detail += '»»»';
+            vendor_detail += row_type;
+            if (index + 1 != total_vendors)
+                vendor_detail += "┘";
+            if (row_type != 'D') {
+
+                if (isNaN(parseInt(order)) || (is_valid_order == true && parseInt(order) <= 0))
+                    is_valid_order = false;
+                if (isNaN(parseFloat(alloc)) || (is_valid_alloc == true && parseFloat(alloc) <= 0))
+                    is_valid_alloc = false;
+                else
+                    alloc_sum += parseFloat(alloc);
+                if (isNaN(parseFloat(unit_price)) || (is_valid_UP == true && parseFloat(unit_price) <= 0))
+                    is_valid_UP = false;
+                if (isNaN(parseInt(LT)) || (is_valid_LT == true && parseInt(LT) <= 0))
+                    is_valid_LT = false;
+                if (vendor_id == 0)
+                    is_valid_vendor = false;
+            }
+        });
+        var error_messages = "";
+        if (is_valid_vendor == false)
+            error_messages += "In valid Vendor Selected<br/>";
+        if (alloc_sum.toFixed(1) != 1) {
+            error_messages += "Sum of Alloc% should be 1 <br/>";
+        }
+        if (is_valid_order == false)
+            error_messages += "Invalid Order values found <br/>";
+        if (is_valid_alloc == false)
+            error_messages += "Invalid Alloc values found <br/>";
+        if (is_valid_LT == false)
+            error_messages += "Invalid LT values found <br/>";
+        if (is_valid_UP == false)
+            error_messages += "Invalid UP values found <br/>";
+
+        if (error_messages.length > 0) {
+            showAlert('Errors:', error_messages);
+            return;
+        }
+
+
+
+
+        $.ajax({
+            cache: false,
+            type: 'GET',
+            url: '/VendorMatrix/SaveVendors',
+            data: {
+                vendors: vendor_detail,
+                part_num: part_num
+            },
+            datatype: JSON,
+            success: function (data) {
+                if (data.IsValid)
+                    load_all_parts();
+                else {
+                    showAlert("Error", "Some error occured while saving record(s)");
+                }
+                any_row_open = false;
+            },
+            onerror: function (r) { r },
+            failure: function (r) { r }
+        });
+
+    }
+
+    function upload_file() {
+        var uploader = $("#file_uploader");
+        uploader.val("");
+        uploader.click();
+    }
+
+    function send_file_to_controller(e) {
+        var file = document.getElementById("file_uploader").files[0];
+        var file_name = $(e).val();
+
+        var valid_ext = new Array(".xlsx", ".xls");
+        var file_ext = e.value;
+        file_ext = file_ext.substring(file_ext.lastIndexOf('.'));
+
+
+        if (file_name == "")
+            return;
+
+        if (valid_ext.indexOf(file_ext) < 0) {
+            showAlert('Invalid file format', 'Invalid file selected, Please select excel file');
+            return;
+        }
+
+        var data = new FormData();
+        data.append("excel_file", file);
+        $.ajax({
+            cache: false,
+            //contentType: "application/json; charset=utf-8",
+            contentType: false,
+            processData: false,
+            //async:true,
+            type: 'POST',
+            data: data,
+            url: '/VendorMatrix/LoadExcelFile',
+            success: function (data) {
+                if (data.error_messages.length > 0)
+                    showAlert("Error Messages", data.error_messages);
+                load_all_parts();
+                any_row_open = false;
+
+            },
+            onerror: function (r) { showAlert('Error', r) },
+            failure: function (r) { r }
+        });
+
+    }
+
+    function make_grid(tableId, data, tableHeight, columnWidth, search, isScrollX, reportTitle, buttonId) {
+        var rptCode = $('#rptCode').val(); // for sql docs.
+        var rptTitle = $('#rptTitle').val(); // for sql docs.
+        isScrollX = (isScrollX == undefined ? false : true);
+        if (search == undefined) { search = true; }
+
+        reportTitle = (reportTitle == undefined ? $('.box-title').text() : reportTitle);
+        buttonId = (buttonId == undefined ? 'buttons' : buttonId);
+
+        var gridButtonsClass = '';
+        var gridSearchBoxClass = '';
+        var gridButtonSize = 0;
+
+        gridButtonsClass = 'btn-header btn-box-tool';
+        gridSearchBoxClass = 'btn-box-tool bg-white txtSearch'
+        gridButtonSize = 20;
+
+        //AddSqlDoc("buttons");
+        if (search == true) {
+            $('#buttons').empty();
+            AddSqlDoc(buttonId, gridButtonSize);
+            var boxtool = '<input class="txtSearch-frame" id="txtSearch" type="text" placeholder="Search.." style="padding-left: 10px !important;" >';
+            $('#buttons').append(boxtool);
+        }
+
+        var table = $('#' + tableId).DataTable({
+            dom: 'Bfrtip',
+            data: data,
+            //scrollY: gridHeight,
+            paging: true,
+            pagingType: 'full',
+            destroy: true,
+            searching: search,
+            order: [],
+            pageLength: 100,
+            columnDefs: columnWidth,
+            scrollX: isScrollX,
+            select: true,
+            language: {
+                emptyTable: "<p style=\"text-align:left;\">No record(s) found.</p>",
+                zeroRecords: "<p style=\"text-align:left;\">No matching record(s) found</p>",
+                info: "Showing _START_ to _END_ of _TOTAL_ entries",
+                oPaginate: {
+                    sNext: '<i class="fa fa-forward"></i>',
+                    sPrevious: '<i class="fa fa-backward"></i>',
+                    sFirst: '<i class="fa fa-step-backward"></i>',
+                    sLast: '<i class="fa fa-step-forward"></i>'
+                }
+            },
+            "dom": "<'row'<'col-sm-12'tr>>" +
+                "<'row'<'col-sm-5'i><'#designedBy.col-sm-3'><'col-sm-4'p>>",
+            buttons: [
+                {
+                    //extend: 'excelHtml5',
+                    text: '<span><span class="fa-stack"><i class="fa fa-circle fa-stack-2x" style="color: rgb(0, 179, 98);"></i><i class="fa fa-file-excel fa-stack-1x" style="color: white;"></i></span></span>',
+                    titleAttr: 'Export to excel',
+                    //title: '',
+                    //filename: 'DataExport', //Added By Tahir
+                    //exportOptions: {
+                    //    columns: 'th:not(.notexport)'
+                    //},
+                    action: function (e, dt, node, config) {
+                        var btn = $("#btnExport");
+                        btn.click();
+
+                    }
+                },
+                {
+                    extend: 'print',
+                    footer: true,
+                    text: '<span><span class="fa-stack"><i class="fa fa-circle fa-stack-2x" style="color: rgb(0, 204, 255);"></i><i class="fa fa-print fa-stack-1x" style="color: white;"></i></span></span>',
+                    title: '',
+                    messageTop: function () { return '<h4>' + reportTitle + '</h4>' },
+                    titleAttr: 'Print',
+                    filename: 'DataExport',
+                    exportOptions: {
+                        columns: 'th:not(.notexport)'
+                    }
+                },
+            ],
+        });
+
+        table.buttons().container().appendTo('#buttons');
+
+        table.button(0).nodes().removeClass('btn btn-default buttons-copy buttons-html5');
+        table.button(0).nodes().addClass(gridButtonsClass);
+
+        table.button(1).nodes().removeClass('btn btn-default buttons-excel buttons-html5');
+        table.button(1).nodes().addClass(gridButtonsClass);
+
+        var dsgndby = $('.modal-footer > #designedby ').html();
+        if (dsgndby == "") { $('#designedBy').html($('.desgndBy').html()) }//.css({ "padding": "8px" }); }
+
+        var layoutHeader = $('nav').innerHeight();
+        var cardHeader = $('.box-header').innerHeight();
+        var tableHeader = $('.dataTables_scrollHead').innerHeight();
+        var tableFooter = 0;
+        var cardFooterH = 28;
+
+        var browserHeight = window.innerHeight;
+        if (tableHeight == 0) {
+            if (layoutHeader == undefined)
+                gridHeight = browserHeight - (cardHeader + tableHeader + tableFooter + cardFooterH + 4);
+            else
+                gridHeight = browserHeight - (layoutHeader + cardHeader + tableHeader + tableFooter + cardFooterH + 4);
+        }
+        else
+            gridHeight = (window.innerHeight * tableHeight) / 100;
+
+        $('.dataTables_scrollBody').css('height', gridHeight + 'px');
+        table.columns.adjust().draw();
+
+        $('.dataTables_filter').hide();
+        $('#txtSearch').on('keyup change', function () {
+            table.search(this.value).draw();
+        });
+        return table;
+    }
+    function is_numeric(inputId) {
+        $("." + inputId).on("keypress keyup blur", function (event) {
+            $(this).val($(this).val().replace(/[^\d].+/, ""));
+            if ((event.which < 48 || event.which > 57)) {
+                event.preventDefault();
+            }
+        });
+    }
+
+    function is_decimal(inputId) {
+        $("." + inputId).on("input", function (evt) {
+            var self = $(this);
+            self.val(self.val().replace(/[^0-9\.]/g, ''));
+            if ((evt.which != 46 || self.val().indexOf('.') != -1) && (evt.which < 48 || evt.which > 57)) {
+                evt.preventDefault();
+            }
+        });
+    }
+    function disable_paste(inputId) {
+        $('.' + inputId).on("cut copy paste", function (e) {
+            e.preventDefault();
+        });
+    }
+</script>
